@@ -1,7 +1,6 @@
 <!DOCTYPE html>
 <html lang="id">
 <head>
-    <meta name="google-site-verification" content="P3YGHZCaE9-ETe_ESuUs491p6Ytg0krlNd_wGW3KECo" />
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Daftar Tugas Keren</title>
@@ -383,6 +382,7 @@
             // Task List (using event delegation)
             const taskList = document.getElementById('task-list');
             if (taskList) {
+                // Combine all click handlers for task list items into one event listener
                 taskList.onclick = (e) => {
                     const listItem = e.target.closest('li[data-task-id]');
                     if (!listItem) return;
@@ -391,14 +391,16 @@
                     const task = appState.tasks.find(t => t.id === taskId);
                     if (!task) return;
 
-                    if (e.target.closest('.toggle-complete-span')) {
-                        appState.toggleComplete(taskId, task.completed);
-                    } else if (e.target.closest('.toggle-complete-btn')) {
+                    if (e.target.closest('.toggle-complete-span') || e.target.closest('.toggle-complete-btn')) {
                         appState.toggleComplete(taskId, task.completed);
                     } else if (e.target.closest('.edit-task-btn')) {
                         appState.startEditing(task);
                     } else if (e.target.closest('.delete-task-btn')) {
                         appState.handleDeleteClick(task);
+                    } else if (e.target.closest('.save-edit-btn')) {
+                        appState.saveEdit(taskId);
+                    } else if (e.target.closest('.cancel-edit-btn')) {
+                        appState.cancelEdit();
                     }
                 };
 
@@ -413,21 +415,6 @@
                         const taskId = e.target.closest('li[data-task-id]').dataset.taskId;
                         appState.saveEdit(taskId);
                     }
-                };
-
-                taskList.onclick = (e) => {
-                    const listItem = e.target.closest('li[data-task-id]');
-                    if (!listItem) return;
-                    const taskId = listItem.dataset.taskId;
-                    const task = appState.tasks.find(t => t.id === taskId);
-                    if (!task) return;
-
-                    if (e.target.closest('.save-edit-btn')) {
-                        appState.saveEdit(taskId);
-                    } else if (e.target.closest('.cancel-edit-btn')) {
-                        appState.cancelEdit();
-                    }
-                    // Handle other task clicks already set up above
                 };
             }
 

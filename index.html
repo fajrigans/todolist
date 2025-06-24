@@ -1,0 +1,623 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, addDoc, onSnapshot, updateDoc, deleteDoc, doc, query, orderBy, where, getDocs } from 'firebase/firestore';
+import { Sun, Moon, Plus, Trash2, CheckCircle, XCircle, Edit, Save, X } from 'lucide-react'; // Using lucide-react for icons
+
+// Main App component
+const App = () => {
+  const [tasks, setTasks] = useState([]); // State to hold the list of tasks
+  const [newTask, setNewTask] = useState(''); // State for the new task input field
+  const [theme, setTheme] = useState('light'); // State for the current theme ('light' or 'dark')
+  const [db, setDb] = useState(null); // Firestore database instance
+  const [auth, setAuth] = useState(null); // Firebase Auth instance
+  const [userId, setUserId] = useState(null); // User ID
+  const [isAuthReady, setIsAuthReady] = useState(false); // Flag to check if authentication is ready
+  const [message, setMessage] = useState(''); // State for displaying messages to the user
+  const messageTimeoutRef = useRef(null); // Ref for message timeout
+  const [filterStatus, setFilterStatus] = useState('all'); // State for task filter: 'all', 'active', 'completed'
+  const [editingTaskId, setEditingTaskId] = useState(null); // State to track which task is being edited
+  const [editingTaskText, setEditingTaskText] = useState(''); // State for the text of the task being edited
+  const [showConfirmModal, setShowConfirmModal] = useState(false); // State for delete confirmation modal
+  const [taskToDelete, setTaskToDelete] = useState(null); // State to store the task to be deleted
+  const [isLoading, setIsLoading] = useState(true); // State for loading indicator
+  const [showMessageBox, setShowMessageBox] = useState(false); // State for message box visibility
+
+  // Initialize Firebase and set up authentication listener
+  useEffect(() => {
+    try {
+      const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+      const app = initializeApp(firebaseConfig);
+      const firestoreDb = getFirestore(app);
+      const firebaseAuth = getAuth(app);
+
+      setDb(firestoreDb);
+      setAuth(firebaseAuth);
+
+      // Listen for auth state changes
+      const unsubscribeAuth = onAuthStateChanged(firebaseAuth, async (user) => {
+        if (user) {
+          setUserId(user.uid);
+          setIsAuthReady(true);
+        } else {
+          // If no user, try to sign in with custom token or anonymously
+          try {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+              await signInWithCustomToken(firebaseAuth, __initial_auth_token);
+            } else {
+              await signInAnonymously(firebaseAuth);
+            }
+          } catch (error) {
+            console.error("Error signing in:", error);
+            showMessage("Gagal masuk. Coba lagi.", 'error');
+            setIsLoading(false); // Stop loading if sign-in fails
+          }
+        }
+      });
+
+      // Clean up auth listener on unmount
+      return () => unsubscribeAuth();
+    } catch (error) {
+      console.error("Error initializing Firebase:", error);
+      showMessage("Gagal menginisialisasi Firebase.", 'error');
+      setIsLoading(false); // Stop loading if Firebase init fails
+    }
+  }, []);
+
+  // Fetch tasks from Firestore when auth is ready
+  useEffect(() => {
+    if (db && userId && isAuthReady) {
+      setIsLoading(true);
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+      const tasksCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/todos`);
+
+      // Use onSnapshot to listen for real-time updates
+      const unsubscribe = onSnapshot(tasksCollectionRef, (snapshot) => {
+        const fetchedTasks = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        // Sort tasks: incomplete tasks first, then completed tasks, by creation date
+        fetchedTasks.sort((a, b) => {
+          // Incomplete tasks come before completed tasks
+          if (a.completed && !b.completed) return 1;
+          if (!a.completed && b.completed) return -1;
+          // For tasks with the same completion status, sort by creation time
+          return a.createdAt - b.createdAt;
+        });
+        setTasks(fetchedTasks);
+        setIsLoading(false);
+      }, (error) => {
+        console.error("Error fetching tasks:", error);
+        showMessage("Gagal memuat tugas.", 'error');
+        setIsLoading(false);
+      });
+
+      // Clean up snapshot listener on unmount
+      return () => unsubscribe();
+    }
+  }, [db, userId, isAuthReady]);
+
+  // Function to show a message to the user
+  const showMessage = (msg, type = 'success') => {
+    setMessage(msg);
+    setShowMessageBox(true); // Show the message box
+    if (messageTimeoutRef.current) {
+      clearTimeout(messageTimeoutRef.current);
+    }
+    messageTimeoutRef.current = setTimeout(() => {
+      setShowMessageBox(false); // Hide after animation
+      setMessage(''); // Clear message after it's hidden
+    }, 3500); // Message disappears after 3.5 seconds (3s animation + 0.5s buffer)
+  };
+
+  // Add a new task to Firestore
+  const addTask = async () => {
+    if (newTask.trim() === '') {
+      showMessage('Tugas tidak boleh kosong!', 'warning');
+      return;
+    }
+    if (!db || !userId) {
+      showMessage('Firebase belum siap. Coba lagi.', 'error');
+      return;
+    }
+
+    try {
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+      await addDoc(collection(db, `artifacts/${appId}/users/${userId}/todos`), {
+        text: newTask,
+        completed: false,
+        createdAt: Date.now() // Add a timestamp for sorting
+      });
+      setNewTask('');
+      showMessage('Tugas berhasil ditambahkan!', 'success');
+    } catch (e) {
+      console.error("Error adding document: ", e);
+      showMessage('Gagal menambahkan tugas.', 'error');
+    }
+  };
+
+  // Toggle task completion status in Firestore
+  const toggleComplete = async (id, completed) => {
+    if (!db || !userId) {
+      showMessage('Firebase belum siap. Coba lagi.', 'error');
+      return;
+    }
+
+    try {
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+      const taskDocRef = doc(db, `artifacts/${appId}/users/${userId}/todos`, id);
+      await updateDoc(taskDocRef, {
+        completed: !completed
+      });
+      showMessage('Status tugas diperbarui!', 'success');
+    } catch (e) {
+      console.error("Error updating document: ", e);
+      showMessage('Gagal memperbarui tugas.', 'error');
+    }
+  };
+
+  // Start editing a task
+  const startEditing = (task) => {
+    setEditingTaskId(task.id);
+    setEditingTaskText(task.text);
+  };
+
+  // Save edited task to Firestore
+  const saveEdit = async (id) => {
+    if (editingTaskText.trim() === '') {
+      showMessage('Tugas tidak boleh kosong!', 'warning');
+      return;
+    }
+    if (!db || !userId) {
+      showMessage('Firebase belum siap. Coba lagi.', 'error');
+      return;
+    }
+
+    try {
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+      const taskDocRef = doc(db, `artifacts/${appId}/users/${userId}/todos`, id);
+      await updateDoc(taskDocRef, {
+        text: editingTaskText
+      });
+      setEditingTaskId(null);
+      setEditingTaskText('');
+      showMessage('Tugas berhasil diperbarui!', 'success');
+    } catch (e) {
+      console.error("Error updating document: ", e);
+      showMessage('Gagal memperbarui tugas.', 'error');
+    }
+  };
+
+  // Cancel editing
+  const cancelEdit = () => {
+    setEditingTaskId(null);
+    setEditingTaskText('');
+  };
+
+  // Handle delete click to open confirmation modal
+  const handleDeleteClick = (task) => {
+    setTaskToDelete(task);
+    setShowConfirmModal(true);
+  };
+
+  // Confirm and delete a task from Firestore
+  const confirmDeleteTask = async () => {
+    if (!taskToDelete || !db || !userId) {
+      return;
+    }
+
+    try {
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+      await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/todos`, taskToDelete.id));
+      showMessage('Tugas berhasil dihapus!', 'success');
+      setShowConfirmModal(false);
+      setTaskToDelete(null);
+    } catch (e) {
+      console.error("Error deleting document: ", e);
+      showMessage('Gagal menghapus tugas.', 'error');
+    }
+  };
+
+  // Cancel delete action
+  const cancelDelete = () => {
+    setShowConfirmModal(false);
+    setTaskToDelete(null);
+  };
+
+  // Clear all completed tasks
+  const clearCompletedTasks = async () => {
+    if (!db || !userId) {
+      showMessage('Firebase belum siap. Coba lagi.', 'error');
+      return;
+    }
+
+    try {
+      setIsLoading(true);
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+      const completedTasksQuery = query(
+        collection(db, `artifacts/${appId}/users/${userId}/todos`),
+        where('completed', '==', true)
+      );
+      const snapshot = await getDocs(completedTasksQuery);
+      if (snapshot.empty) {
+        showMessage('Tidak ada tugas yang sudah selesai untuk dihapus.', 'info');
+        setIsLoading(false);
+        return;
+      }
+      const deletePromises = snapshot.docs.map(doc => deleteDoc(doc.ref));
+      await Promise.all(deletePromises);
+      showMessage('Semua tugas yang sudah selesai berhasil dihapus!', 'success');
+      setIsLoading(false);
+    } catch (e) {
+      console.error("Error clearing completed tasks: ", e);
+      showMessage('Gagal menghapus tugas yang sudah selesai.', 'error');
+      setIsLoading(false);
+    }
+  };
+
+  // Filter tasks based on filterStatus
+  const filteredTasks = tasks.filter((task) => {
+    if (filterStatus === 'active') {
+      return !task.completed;
+    } else if (filterStatus === 'completed') {
+      return task.completed;
+    }
+    return true; // 'all' status
+  });
+
+  // Toggle between light and dark themes
+  const toggleTheme = () => {
+    setTheme((prevTheme) => (prevTheme === 'light' ? 'dark' : 'light'));
+  };
+
+  // Apply theme classes to the documentElement (html tag)
+  useEffect(() => {
+    if (theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [theme]);
+
+  // Determine message box background color based on message type
+  const getMessageBgClass = () => {
+    if (message.includes('berhasil')) {
+      return 'bg-green-500';
+    } else if (message.includes('gagal')) {
+      return 'bg-red-500';
+    } else if (message.includes('tidak boleh kosong') || message.includes('Tidak ada tugas yang sudah selesai')) {
+      return 'bg-yellow-500';
+    }
+    return 'bg-blue-500'; // Default
+  };
+
+  return (
+    // Tailwind CSS classes for responsive design and theming
+    <div className={`min-h-screen w-screen flex flex-col items-center justify-center p-4 transition-colors duration-500
+      ${theme === 'dark' ? 'bg-gradient-to-br from-gray-900 via-gray-800 to-indigo-900 text-gray-100' : 'bg-gradient-to-br from-blue-50 to-purple-100 text-gray-900'}
+    `}>
+      {/* Tailwind CSS for general styling */}
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .dark .bg-gray-800 { background-color: #1f2937; }
+        .dark .text-gray-100 { color: #f9fafb; }
+        .dark .text-gray-400 { color: #9ca3af; }
+        .dark .border-gray-700 { border-color: #374151; }
+        .dark .ring-purple-500:focus { --tw-ring-color: #a78bfa; } /* Adjust ring color for dark mode focus */
+        .dark .bg-purple-600 { background-color: #7c3aed; }
+        .dark .hover\\:bg-purple-700:hover { background-color: #6d28d9; }
+        .dark .bg-red-600 { background-color: #dc2626; }
+        .dark .hover\\:bg-red-700:hover { background-color: #b91c1c; }
+        .dark .bg-green-600 { background-color: #16a34a; }
+        .dark .hover\\:bg-green-700:hover { background-color: #15803d; }
+        .dark .bg-yellow-500 { background-color: #f59e0b; }
+        .dark .hover\\:bg-yellow-600:hover { background-color: #d97706; }
+        .dark .bg-blue-500 { background-color: #3b82f6; }
+        .dark .hover\\:bg-blue-600:hover { background-color: #2563eb; }
+        .dark .hover\\:text-purple-400:hover { color: #c084fc; }
+        .dark .bg-gray-700 { background-color: #374151; }
+        .dark .placeholder-gray-400::placeholder { color: #9ca3af; }
+        .dark .text-gray-200 { color: #e5e7eb; }
+        .dark .bg-gradient-to-br { background-image: linear-gradient(to bottom right, var(--tw-gradient-stops)); }
+        
+        /* Loading spinner */
+        .loader {
+          border: 4px solid #f3f3f3;
+          border-top: 4px solid #8b5cf6; /* Tailwind purple-500 */
+          border-radius: 50%;
+          width: 30px;
+          height: 30px;
+          animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+
+        /* Message Box Animation */
+        .message-enter {
+          transform: translateY(-100%);
+          opacity: 0;
+        }
+        .message-enter-active {
+          transform: translateY(0);
+          opacity: 1;
+          transition: transform 0.3s ease-out, opacity 0.3s ease-out;
+        }
+        .message-exit {
+          transform: translateY(0);
+          opacity: 1;
+        }
+        .message-exit-active {
+          transform: translateY(-100%);
+          opacity: 0;
+          transition: transform 0.3s ease-in, opacity 0.3s ease-in;
+        }
+      `}</style>
+
+      {/* Message Box */}
+      {showMessageBox && (
+        <div className={`fixed top-0 left-0 right-0 py-3 text-center z-50 transition-all duration-300 transform
+          ${getMessageBgClass()} text-white
+          ${showMessageBox ? 'message-enter-active' : 'message-exit-active'}
+        `}>
+          {message}
+        </div>
+      )}
+
+      {/* User ID Display */}
+      {userId && (
+        <div className={`mb-4 p-2 rounded-lg text-sm md:text-base ${theme === 'dark' ? 'bg-gray-800 text-gray-400' : 'bg-gray-200 text-gray-600'}`}>
+          ID Pengguna: {userId}
+        </div>
+      )}
+
+      {/* Main container for the todo list app */}
+      <div className={`w-full max-w-sm md:max-w-md lg:max-w-lg p-6 rounded-2xl shadow-2xl relative ${
+        theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white border border-gray-200'
+      } transition-colors duration-300`}>
+        {/* Theme Toggle Button */}
+        <button
+          onClick={toggleTheme}
+          className={`absolute top-4 right-4 p-2 rounded-full transition-colors duration-300 ${
+            theme === 'dark' ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-gray-200 hover:bg-gray-300 text-gray-700'
+          } hover:shadow-md`}
+          aria-label="Toggle theme"
+        >
+          {theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}
+        </button>
+
+        <h1 className={`text-3xl font-bold mb-6 text-center ${theme === 'dark' ? 'text-purple-400' : 'text-purple-700'}`}>
+          Daftar Tugas
+        </h1>
+
+        {/* Add Task Input */}
+        <div className="flex items-center mb-6">
+          <input
+            type="text"
+            className={`flex-grow p-3 rounded-l-lg border focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all duration-200 ${
+              theme === 'dark' ? 'bg-gray-700 border-gray-600 text-gray-200 placeholder-gray-400' : 'bg-gray-50 border-gray-300 text-gray-900 placeholder-gray-500'
+            }`}
+            placeholder="Tambahkan tugas baru..."
+            value={newTask}
+            onChange={(e) => setNewTask(e.target.value)}
+            onKeyPress={(e) => {
+              if (e.key === 'Enter') {
+                addTask();
+              }
+            }}
+            aria-label="New task input"
+            disabled={isLoading}
+          />
+          <button
+            onClick={addTask}
+            className={`p-3 rounded-r-lg text-white font-semibold flex items-center justify-center transition-all duration-200 transform hover:scale-105 hover:shadow-md ${
+              theme === 'dark' ? 'bg-purple-600 hover:bg-purple-700' : 'bg-purple-700 hover:bg-purple-800'
+            } ${isLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+            aria-label="Add task"
+            disabled={isLoading}
+          >
+            <Plus size={20} />
+          </button>
+        </div>
+
+        {/* Filter Buttons */}
+        <div className="flex justify-center space-x-2 mb-6 flex-wrap">
+          <button
+            onClick={() => setFilterStatus('all')}
+            className={`px-4 py-2 rounded-full text-sm font-medium transition-colors duration-200 hover:shadow-sm ${
+              filterStatus === 'all'
+                ? (theme === 'dark' ? 'bg-purple-600 text-white hover:bg-purple-700' : 'bg-purple-700 text-white hover:bg-purple-800')
+                : (theme === 'dark' ? 'bg-gray-700 text-gray-300 hover:bg-gray-600' : 'bg-gray-200 text-gray-700 hover:bg-gray-300')
+            }`}
+          >
+            Semua
+          </button>
+          <button
+            onClick={() => setFilterStatus('active')}
+            className={`px-4 py-2 rounded-full text-sm font-medium transition-colors duration-200 hover:shadow-sm ${
+              filterStatus === 'active'
+                ? (theme === 'dark' ? 'bg-purple-600 text-white hover:bg-purple-700' : 'bg-purple-700 text-white hover:bg-purple-800')
+                : (theme === 'dark' ? 'bg-gray-700 text-gray-300 hover:bg-gray-600' : 'bg-gray-200 text-gray-700 hover:bg-gray-300')
+            }`}
+          >
+            Aktif
+          </button>
+          <button
+            onClick={() => setFilterStatus('completed')}
+            className={`px-4 py-2 rounded-full text-sm font-medium transition-colors duration-200 hover:shadow-sm ${
+              filterStatus === 'completed'
+                ? (theme === 'dark' ? 'bg-purple-600 text-white hover:bg-purple-700' : 'bg-purple-700 text-white hover:bg-purple-800')
+                : (theme === 'dark' ? 'bg-gray-700 text-gray-300 hover:bg-gray-600' : 'bg-gray-200 text-gray-700 hover:bg-gray-300')
+            }`}
+          >
+            Selesai
+          </button>
+        </div>
+
+        {/* Loading Indicator */}
+        {isLoading && (
+          <div className="flex justify-center py-4">
+            <div className="loader"></div>
+          </div>
+        )}
+
+        {/* Task List */}
+        {!isLoading && filteredTasks.length === 0 && (
+          <p className={`text-center py-4 ${theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`}>
+            {filterStatus === 'all' && 'Belum ada tugas. Tambahkan satu!'}
+            {filterStatus === 'active' && 'Tidak ada tugas aktif.'}
+            {filterStatus === 'completed' && 'Tidak ada tugas yang sudah selesai.'}
+          </p>
+        )}
+
+        <ul className="space-y-3">
+          {!isLoading && filteredTasks.map((task) => (
+            <li
+              key={task.id}
+              className={`flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 rounded-lg shadow-md transition-all duration-200 hover:shadow-lg hover:-translate-y-0.5
+                ${theme === 'dark' ? 'bg-gray-700 border border-gray-600' : 'bg-gray-50 border border-gray-200'}
+                ${task.completed ? 'opacity-70 line-through' : ''}
+              `}
+            >
+              {editingTaskId === task.id ? (
+                // Edit mode
+                <div className="flex-grow flex items-center w-full mb-2 sm:mb-0">
+                  <input
+                    type="text"
+                    value={editingTaskText}
+                    onChange={(e) => setEditingTaskText(e.target.value)}
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter') {
+                        saveEdit(task.id);
+                      }
+                    }}
+                    className={`flex-grow p-2 rounded-md border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                      theme === 'dark' ? 'bg-gray-600 border-gray-500 text-gray-100' : 'bg-white border-gray-300 text-gray-900'
+                    }`}
+                    aria-label="Edit task text"
+                  />
+                  <div className="flex ml-2 space-x-1">
+                    <button
+                      onClick={() => saveEdit(task.id)}
+                      className={`p-2 rounded-full text-white font-semibold transition-all duration-200 transform hover:scale-110 hover:shadow-md ${
+                        theme === 'dark' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-blue-700 hover:bg-blue-800'
+                      }`}
+                      aria-label="Save edited task"
+                    >
+                      <Save size={18} />
+                    </button>
+                    <button
+                      onClick={cancelEdit}
+                      className={`p-2 rounded-full text-white font-semibold transition-all duration-200 transform hover:scale-110 hover:shadow-md ${
+                        theme === 'dark' ? 'bg-red-600 hover:bg-red-700' : 'bg-red-700 hover:bg-red-800'
+                      }`}
+                      aria-label="Cancel editing"
+                    >
+                      <X size={18} />
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                // View mode
+                <>
+                  <span
+                    className={`flex-grow cursor-pointer text-lg ${
+                      task.completed
+                        ? (theme === 'dark' ? 'text-gray-400' : 'text-gray-500')
+                        : (theme === 'dark' ? 'text-gray-200' : 'text-gray-800')
+                    } break-words pr-2`}
+                    onClick={() => toggleComplete(task.id, task.completed)}
+                  >
+                    {task.text}
+                  </span>
+                  <div className="flex items-center space-x-2 mt-2 sm:mt-0 sm:ml-4">
+                    <button
+                      onClick={() => toggleComplete(task.id, task.completed)}
+                      className={`p-2 rounded-full focus:outline-none focus:ring-2 transition-all duration-200 transform hover:scale-110 hover:shadow-md ${
+                        task.completed
+                          ? (theme === 'dark' ? 'text-green-400 hover:text-green-300 focus:ring-green-500' : 'text-green-600 hover:text-green-700 focus:ring-green-500')
+                          : (theme === 'dark' ? 'text-yellow-400 hover:text-yellow-300 focus:ring-yellow-500' : 'text-yellow-600 hover:text-yellow-700 focus:ring-yellow-500')
+                      }`}
+                      aria-label={task.completed ? 'Mark as incomplete' : 'Mark as complete'}
+                    >
+                      {task.completed ? <CheckCircle size={20} /> : <XCircle size={20} />}
+                    </button>
+                    <button
+                      onClick={() => startEditing(task)}
+                      className={`p-2 rounded-full focus:outline-none focus:ring-2 transition-all duration-200 transform hover:scale-110 hover:shadow-md ${
+                        theme === 'dark' ? 'text-blue-400 hover:text-blue-300 focus:ring-blue-500' : 'text-blue-600 hover:text-blue-700 focus:ring-blue-500'
+                      }`}
+                      aria-label="Edit task"
+                    >
+                      <Edit size={20} />
+                    </button>
+                    <button
+                      onClick={() => handleDeleteClick(task)}
+                      className={`p-2 rounded-full focus:outline-none focus:ring-2 transition-all duration-200 transform hover:scale-110 hover:shadow-md ${
+                        theme === 'dark' ? 'text-red-400 hover:text-red-300 focus:ring-red-500' : 'text-red-600 hover:text-red-700 focus:ring-red-500'
+                      }`}
+                      aria-label="Delete task"
+                    >
+                      <Trash2 size={20} />
+                    </button>
+                  </div>
+                </>
+              )}
+            </li>
+          ))}
+        </ul>
+
+        {/* Clear Completed Tasks Button */}
+        {tasks.some(task => task.completed) && (
+          <div className="mt-6 text-center">
+            <button
+              onClick={clearCompletedTasks}
+              className={`px-6 py-2 rounded-full font-semibold transition-all duration-200 transform hover:scale-105 hover:shadow-lg ${
+                theme === 'dark' ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-red-700 hover:bg-red-800 text-white'
+              } ${isLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+              disabled={isLoading}
+            >
+              Bersihkan Tugas Selesai
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Confirmation Modal for Delete */}
+      {showConfirmModal && taskToDelete && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className={`p-6 rounded-lg shadow-xl w-full max-w-sm ${
+            theme === 'dark' ? 'bg-gray-800 text-gray-100' : 'bg-white text-gray-900'
+          }`}>
+            <h3 className="text-xl font-bold mb-4">Konfirmasi Penghapusan</h3>
+            <p className="mb-6">Anda yakin ingin menghapus tugas ini: <span className="font-semibold">"{taskToDelete.text}"</span>?</p>
+            <div className="flex justify-end space-x-3">
+              <button
+                onClick={cancelDelete}
+                className={`px-4 py-2 rounded-md font-medium transition-colors duration-200 ${
+                  theme === 'dark' ? 'bg-gray-600 hover:bg-gray-700 text-gray-200' : 'bg-gray-300 hover:bg-gray-400 text-gray-800'
+                } hover:shadow-sm`}
+              >
+                Batal
+              </button>
+              <button
+                onClick={confirmDeleteTask}
+                className={`px-4 py-2 rounded-md font-medium transition-colors duration-200 ${
+                  theme === 'dark' ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-red-700 hover:bg-red-800 text-white'
+                } hover:shadow-sm`}
+              >
+                Hapus
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default App;

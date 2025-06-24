@@ -1,623 +1,627 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, addDoc, onSnapshot, updateDoc, deleteDoc, doc, query, orderBy, where, getDocs } from 'firebase/firestore';
-import { Sun, Moon, Plus, Trash2, CheckCircle, XCircle, Edit, Save, X } from 'lucide-react'; // Using lucide-react for icons
-
-// Main App component
-const App = () => {
-  const [tasks, setTasks] = useState([]); // State to hold the list of tasks
-  const [newTask, setNewTask] = useState(''); // State for the new task input field
-  const [theme, setTheme] = useState('light'); // State for the current theme ('light' or 'dark')
-  const [db, setDb] = useState(null); // Firestore database instance
-  const [auth, setAuth] = useState(null); // Firebase Auth instance
-  const [userId, setUserId] = useState(null); // User ID
-  const [isAuthReady, setIsAuthReady] = useState(false); // Flag to check if authentication is ready
-  const [message, setMessage] = useState(''); // State for displaying messages to the user
-  const messageTimeoutRef = useRef(null); // Ref for message timeout
-  const [filterStatus, setFilterStatus] = useState('all'); // State for task filter: 'all', 'active', 'completed'
-  const [editingTaskId, setEditingTaskId] = useState(null); // State to track which task is being edited
-  const [editingTaskText, setEditingTaskText] = useState(''); // State for the text of the task being edited
-  const [showConfirmModal, setShowConfirmModal] = useState(false); // State for delete confirmation modal
-  const [taskToDelete, setTaskToDelete] = useState(null); // State to store the task to be deleted
-  const [isLoading, setIsLoading] = useState(true); // State for loading indicator
-  const [showMessageBox, setShowMessageBox] = useState(false); // State for message box visibility
-
-  // Initialize Firebase and set up authentication listener
-  useEffect(() => {
-    try {
-      const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-      const app = initializeApp(firebaseConfig);
-      const firestoreDb = getFirestore(app);
-      const firebaseAuth = getAuth(app);
-
-      setDb(firestoreDb);
-      setAuth(firebaseAuth);
-
-      // Listen for auth state changes
-      const unsubscribeAuth = onAuthStateChanged(firebaseAuth, async (user) => {
-        if (user) {
-          setUserId(user.uid);
-          setIsAuthReady(true);
-        } else {
-          // If no user, try to sign in with custom token or anonymously
-          try {
-            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-              await signInWithCustomToken(firebaseAuth, __initial_auth_token);
-            } else {
-              await signInAnonymously(firebaseAuth);
-            }
-          } catch (error) {
-            console.error("Error signing in:", error);
-            showMessage("Gagal masuk. Coba lagi.", 'error');
-            setIsLoading(false); // Stop loading if sign-in fails
-          }
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Daftar Tugas Keren</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts: Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            overflow-x: hidden; /* Prevent horizontal scroll */
         }
-      });
-
-      // Clean up auth listener on unmount
-      return () => unsubscribeAuth();
-    } catch (error) {
-      console.error("Error initializing Firebase:", error);
-      showMessage("Gagal menginisialisasi Firebase.", 'error');
-      setIsLoading(false); // Stop loading if Firebase init fails
-    }
-  }, []);
-
-  // Fetch tasks from Firestore when auth is ready
-  useEffect(() => {
-    if (db && userId && isAuthReady) {
-      setIsLoading(true);
-      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-      const tasksCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/todos`);
-
-      // Use onSnapshot to listen for real-time updates
-      const unsubscribe = onSnapshot(tasksCollectionRef, (snapshot) => {
-        const fetchedTasks = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        // Sort tasks: incomplete tasks first, then completed tasks, by creation date
-        fetchedTasks.sort((a, b) => {
-          // Incomplete tasks come before completed tasks
-          if (a.completed && !b.completed) return 1;
-          if (!a.completed && b.completed) return -1;
-          // For tasks with the same completion status, sort by creation time
-          return a.createdAt - b.createdAt;
-        });
-        setTasks(fetchedTasks);
-        setIsLoading(false);
-      }, (error) => {
-        console.error("Error fetching tasks:", error);
-        showMessage("Gagal memuat tugas.", 'error');
-        setIsLoading(false);
-      });
-
-      // Clean up snapshot listener on unmount
-      return () => unsubscribe();
-    }
-  }, [db, userId, isAuthReady]);
-
-  // Function to show a message to the user
-  const showMessage = (msg, type = 'success') => {
-    setMessage(msg);
-    setShowMessageBox(true); // Show the message box
-    if (messageTimeoutRef.current) {
-      clearTimeout(messageTimeoutRef.current);
-    }
-    messageTimeoutRef.current = setTimeout(() => {
-      setShowMessageBox(false); // Hide after animation
-      setMessage(''); // Clear message after it's hidden
-    }, 3500); // Message disappears after 3.5 seconds (3s animation + 0.5s buffer)
-  };
-
-  // Add a new task to Firestore
-  const addTask = async () => {
-    if (newTask.trim() === '') {
-      showMessage('Tugas tidak boleh kosong!', 'warning');
-      return;
-    }
-    if (!db || !userId) {
-      showMessage('Firebase belum siap. Coba lagi.', 'error');
-      return;
-    }
-
-    try {
-      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-      await addDoc(collection(db, `artifacts/${appId}/users/${userId}/todos`), {
-        text: newTask,
-        completed: false,
-        createdAt: Date.now() // Add a timestamp for sorting
-      });
-      setNewTask('');
-      showMessage('Tugas berhasil ditambahkan!', 'success');
-    } catch (e) {
-      console.error("Error adding document: ", e);
-      showMessage('Gagal menambahkan tugas.', 'error');
-    }
-  };
-
-  // Toggle task completion status in Firestore
-  const toggleComplete = async (id, completed) => {
-    if (!db || !userId) {
-      showMessage('Firebase belum siap. Coba lagi.', 'error');
-      return;
-    }
-
-    try {
-      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-      const taskDocRef = doc(db, `artifacts/${appId}/users/${userId}/todos`, id);
-      await updateDoc(taskDocRef, {
-        completed: !completed
-      });
-      showMessage('Status tugas diperbarui!', 'success');
-    } catch (e) {
-      console.error("Error updating document: ", e);
-      showMessage('Gagal memperbarui tugas.', 'error');
-    }
-  };
-
-  // Start editing a task
-  const startEditing = (task) => {
-    setEditingTaskId(task.id);
-    setEditingTaskText(task.text);
-  };
-
-  // Save edited task to Firestore
-  const saveEdit = async (id) => {
-    if (editingTaskText.trim() === '') {
-      showMessage('Tugas tidak boleh kosong!', 'warning');
-      return;
-    }
-    if (!db || !userId) {
-      showMessage('Firebase belum siap. Coba lagi.', 'error');
-      return;
-    }
-
-    try {
-      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-      const taskDocRef = doc(db, `artifacts/${appId}/users/${userId}/todos`, id);
-      await updateDoc(taskDocRef, {
-        text: editingTaskText
-      });
-      setEditingTaskId(null);
-      setEditingTaskText('');
-      showMessage('Tugas berhasil diperbarui!', 'success');
-    } catch (e) {
-      console.error("Error updating document: ", e);
-      showMessage('Gagal memperbarui tugas.', 'error');
-    }
-  };
-
-  // Cancel editing
-  const cancelEdit = () => {
-    setEditingTaskId(null);
-    setEditingTaskText('');
-  };
-
-  // Handle delete click to open confirmation modal
-  const handleDeleteClick = (task) => {
-    setTaskToDelete(task);
-    setShowConfirmModal(true);
-  };
-
-  // Confirm and delete a task from Firestore
-  const confirmDeleteTask = async () => {
-    if (!taskToDelete || !db || !userId) {
-      return;
-    }
-
-    try {
-      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-      await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/todos`, taskToDelete.id));
-      showMessage('Tugas berhasil dihapus!', 'success');
-      setShowConfirmModal(false);
-      setTaskToDelete(null);
-    } catch (e) {
-      console.error("Error deleting document: ", e);
-      showMessage('Gagal menghapus tugas.', 'error');
-    }
-  };
-
-  // Cancel delete action
-  const cancelDelete = () => {
-    setShowConfirmModal(false);
-    setTaskToDelete(null);
-  };
-
-  // Clear all completed tasks
-  const clearCompletedTasks = async () => {
-    if (!db || !userId) {
-      showMessage('Firebase belum siap. Coba lagi.', 'error');
-      return;
-    }
-
-    try {
-      setIsLoading(true);
-      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-      const completedTasksQuery = query(
-        collection(db, `artifacts/${appId}/users/${userId}/todos`),
-        where('completed', '==', true)
-      );
-      const snapshot = await getDocs(completedTasksQuery);
-      if (snapshot.empty) {
-        showMessage('Tidak ada tugas yang sudah selesai untuk dihapus.', 'info');
-        setIsLoading(false);
-        return;
-      }
-      const deletePromises = snapshot.docs.map(doc => deleteDoc(doc.ref));
-      await Promise.all(deletePromises);
-      showMessage('Semua tugas yang sudah selesai berhasil dihapus!', 'success');
-      setIsLoading(false);
-    } catch (e) {
-      console.error("Error clearing completed tasks: ", e);
-      showMessage('Gagal menghapus tugas yang sudah selesai.', 'error');
-      setIsLoading(false);
-    }
-  };
-
-  // Filter tasks based on filterStatus
-  const filteredTasks = tasks.filter((task) => {
-    if (filterStatus === 'active') {
-      return !task.completed;
-    } else if (filterStatus === 'completed') {
-      return task.completed;
-    }
-    return true; // 'all' status
-  });
-
-  // Toggle between light and dark themes
-  const toggleTheme = () => {
-    setTheme((prevTheme) => (prevTheme === 'light' ? 'dark' : 'light'));
-  };
-
-  // Apply theme classes to the documentElement (html tag)
-  useEffect(() => {
-    if (theme === 'dark') {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
-  }, [theme]);
-
-  // Determine message box background color based on message type
-  const getMessageBgClass = () => {
-    if (message.includes('berhasil')) {
-      return 'bg-green-500';
-    } else if (message.includes('gagal')) {
-      return 'bg-red-500';
-    } else if (message.includes('tidak boleh kosong') || message.includes('Tidak ada tugas yang sudah selesai')) {
-      return 'bg-yellow-500';
-    }
-    return 'bg-blue-500'; // Default
-  };
-
-  return (
-    // Tailwind CSS classes for responsive design and theming
-    <div className={`min-h-screen w-screen flex flex-col items-center justify-center p-4 transition-colors duration-500
-      ${theme === 'dark' ? 'bg-gradient-to-br from-gray-900 via-gray-800 to-indigo-900 text-gray-100' : 'bg-gradient-to-br from-blue-50 to-purple-100 text-gray-900'}
-    `}>
-      {/* Tailwind CSS for general styling */}
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap');
-        body { font-family: 'Inter', sans-serif; }
+        /* Custom styles for dark mode */
         .dark .bg-gray-800 { background-color: #1f2937; }
         .dark .text-gray-100 { color: #f9fafb; }
         .dark .text-gray-400 { color: #9ca3af; }
         .dark .border-gray-700 { border-color: #374151; }
-        .dark .ring-purple-500:focus { --tw-ring-color: #a78bfa; } /* Adjust ring color for dark mode focus */
+        .dark .ring-purple-500:focus { --tw-ring-color: #a78bfa; }
         .dark .bg-purple-600 { background-color: #7c3aed; }
-        .dark .hover\\:bg-purple-700:hover { background-color: #6d28d9; }
+        .dark .hover\:bg-purple-700:hover { background-color: #6d28d9; }
         .dark .bg-red-600 { background-color: #dc2626; }
-        .dark .hover\\:bg-red-700:hover { background-color: #b91c1c; }
+        .dark .hover\:bg-red-700:hover { background-color: #b91c1c; }
         .dark .bg-green-600 { background-color: #16a34a; }
-        .dark .hover\\:bg-green-700:hover { background-color: #15803d; }
+        .dark .hover\:bg-green-700:hover { background-color: #15803d; }
         .dark .bg-yellow-500 { background-color: #f59e0b; }
-        .dark .hover\\:bg-yellow-600:hover { background-color: #d97706; }
+        .dark .hover\:bg-yellow-600:hover { background-color: #d97706; }
         .dark .bg-blue-500 { background-color: #3b82f6; }
-        .dark .hover\\:bg-blue-600:hover { background-color: #2563eb; }
-        .dark .hover\\:text-purple-400:hover { color: #c084fc; }
+        .dark .hover\:bg-blue-600:hover { background-color: #2563eb; }
+        .dark .hover\:text-purple-400:hover { color: #c084fc; }
         .dark .bg-gray-700 { background-color: #374151; }
         .dark .placeholder-gray-400::placeholder { color: #9ca3af; }
         .dark .text-gray-200 { color: #e5e7eb; }
-        .dark .bg-gradient-to-br { background-image: linear-gradient(to bottom right, var(--tw-gradient-stops)); }
-        
+        .dark .bg-gradient-to-br { /* Defined inline in JS for dynamic colors */ }
+
         /* Loading spinner */
         .loader {
-          border: 4px solid #f3f3f3;
-          border-top: 4px solid #8b5cf6; /* Tailwind purple-500 */
-          border-radius: 50%;
-          width: 30px;
-          height: 30px;
-          animation: spin 1s linear infinite;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #8b5cf6; /* Tailwind purple-500 */
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
         }
-
         @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
 
         /* Message Box Animation */
-        .message-enter {
-          transform: translateY(-100%);
-          opacity: 0;
+        .message-box {
+            transform: translateY(-100%);
+            opacity: 0;
+            transition: transform 0.3s ease-out, opacity 0.3s ease-out;
         }
-        .message-enter-active {
-          transform: translateY(0);
-          opacity: 1;
-          transition: transform 0.3s ease-out, opacity 0.3s ease-out;
+        .message-box.show {
+            transform: translateY(0);
+            opacity: 1;
         }
-        .message-exit {
-          transform: translateY(0);
-          opacity: 1;
-        }
-        .message-exit-active {
-          transform: translateY(-100%);
-          opacity: 0;
-          transition: transform 0.3s ease-in, opacity 0.3s ease-in;
-        }
-      `}</style>
-
-      {/* Message Box */}
-      {showMessageBox && (
-        <div className={`fixed top-0 left-0 right-0 py-3 text-center z-50 transition-all duration-300 transform
-          ${getMessageBgClass()} text-white
-          ${showMessageBox ? 'message-enter-active' : 'message-exit-active'}
-        `}>
-          {message}
-        </div>
-      )}
-
-      {/* User ID Display */}
-      {userId && (
-        <div className={`mb-4 p-2 rounded-lg text-sm md:text-base ${theme === 'dark' ? 'bg-gray-800 text-gray-400' : 'bg-gray-200 text-gray-600'}`}>
-          ID Pengguna: {userId}
-        </div>
-      )}
-
-      {/* Main container for the todo list app */}
-      <div className={`w-full max-w-sm md:max-w-md lg:max-w-lg p-6 rounded-2xl shadow-2xl relative ${
-        theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white border border-gray-200'
-      } transition-colors duration-300`}>
-        {/* Theme Toggle Button */}
-        <button
-          onClick={toggleTheme}
-          className={`absolute top-4 right-4 p-2 rounded-full transition-colors duration-300 ${
-            theme === 'dark' ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-gray-200 hover:bg-gray-300 text-gray-700'
-          } hover:shadow-md`}
-          aria-label="Toggle theme"
-        >
-          {theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}
-        </button>
-
-        <h1 className={`text-3xl font-bold mb-6 text-center ${theme === 'dark' ? 'text-purple-400' : 'text-purple-700'}`}>
-          Daftar Tugas
-        </h1>
-
-        {/* Add Task Input */}
-        <div className="flex items-center mb-6">
-          <input
-            type="text"
-            className={`flex-grow p-3 rounded-l-lg border focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all duration-200 ${
-              theme === 'dark' ? 'bg-gray-700 border-gray-600 text-gray-200 placeholder-gray-400' : 'bg-gray-50 border-gray-300 text-gray-900 placeholder-gray-500'
-            }`}
-            placeholder="Tambahkan tugas baru..."
-            value={newTask}
-            onChange={(e) => setNewTask(e.target.value)}
-            onKeyPress={(e) => {
-              if (e.key === 'Enter') {
-                addTask();
-              }
-            }}
-            aria-label="New task input"
-            disabled={isLoading}
-          />
-          <button
-            onClick={addTask}
-            className={`p-3 rounded-r-lg text-white font-semibold flex items-center justify-center transition-all duration-200 transform hover:scale-105 hover:shadow-md ${
-              theme === 'dark' ? 'bg-purple-600 hover:bg-purple-700' : 'bg-purple-700 hover:bg-purple-800'
-            } ${isLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
-            aria-label="Add task"
-            disabled={isLoading}
-          >
-            <Plus size={20} />
-          </button>
-        </div>
-
-        {/* Filter Buttons */}
-        <div className="flex justify-center space-x-2 mb-6 flex-wrap">
-          <button
-            onClick={() => setFilterStatus('all')}
-            className={`px-4 py-2 rounded-full text-sm font-medium transition-colors duration-200 hover:shadow-sm ${
-              filterStatus === 'all'
-                ? (theme === 'dark' ? 'bg-purple-600 text-white hover:bg-purple-700' : 'bg-purple-700 text-white hover:bg-purple-800')
-                : (theme === 'dark' ? 'bg-gray-700 text-gray-300 hover:bg-gray-600' : 'bg-gray-200 text-gray-700 hover:bg-gray-300')
-            }`}
-          >
-            Semua
-          </button>
-          <button
-            onClick={() => setFilterStatus('active')}
-            className={`px-4 py-2 rounded-full text-sm font-medium transition-colors duration-200 hover:shadow-sm ${
-              filterStatus === 'active'
-                ? (theme === 'dark' ? 'bg-purple-600 text-white hover:bg-purple-700' : 'bg-purple-700 text-white hover:bg-purple-800')
-                : (theme === 'dark' ? 'bg-gray-700 text-gray-300 hover:bg-gray-600' : 'bg-gray-200 text-gray-700 hover:bg-gray-300')
-            }`}
-          >
-            Aktif
-          </button>
-          <button
-            onClick={() => setFilterStatus('completed')}
-            className={`px-4 py-2 rounded-full text-sm font-medium transition-colors duration-200 hover:shadow-sm ${
-              filterStatus === 'completed'
-                ? (theme === 'dark' ? 'bg-purple-600 text-white hover:bg-purple-700' : 'bg-purple-700 text-white hover:bg-purple-800')
-                : (theme === 'dark' ? 'bg-gray-700 text-gray-300 hover:bg-gray-600' : 'bg-gray-200 text-gray-700 hover:bg-gray-300')
-            }`}
-          >
-            Selesai
-          </button>
-        </div>
-
-        {/* Loading Indicator */}
-        {isLoading && (
-          <div className="flex justify-center py-4">
-            <div className="loader"></div>
-          </div>
-        )}
-
-        {/* Task List */}
-        {!isLoading && filteredTasks.length === 0 && (
-          <p className={`text-center py-4 ${theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`}>
-            {filterStatus === 'all' && 'Belum ada tugas. Tambahkan satu!'}
-            {filterStatus === 'active' && 'Tidak ada tugas aktif.'}
-            {filterStatus === 'completed' && 'Tidak ada tugas yang sudah selesai.'}
-          </p>
-        )}
-
-        <ul className="space-y-3">
-          {!isLoading && filteredTasks.map((task) => (
-            <li
-              key={task.id}
-              className={`flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 rounded-lg shadow-md transition-all duration-200 hover:shadow-lg hover:-translate-y-0.5
-                ${theme === 'dark' ? 'bg-gray-700 border border-gray-600' : 'bg-gray-50 border border-gray-200'}
-                ${task.completed ? 'opacity-70 line-through' : ''}
-              `}
-            >
-              {editingTaskId === task.id ? (
-                // Edit mode
-                <div className="flex-grow flex items-center w-full mb-2 sm:mb-0">
-                  <input
-                    type="text"
-                    value={editingTaskText}
-                    onChange={(e) => setEditingTaskText(e.target.value)}
-                    onKeyPress={(e) => {
-                      if (e.key === 'Enter') {
-                        saveEdit(task.id);
-                      }
-                    }}
-                    className={`flex-grow p-2 rounded-md border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                      theme === 'dark' ? 'bg-gray-600 border-gray-500 text-gray-100' : 'bg-white border-gray-300 text-gray-900'
-                    }`}
-                    aria-label="Edit task text"
-                  />
-                  <div className="flex ml-2 space-x-1">
-                    <button
-                      onClick={() => saveEdit(task.id)}
-                      className={`p-2 rounded-full text-white font-semibold transition-all duration-200 transform hover:scale-110 hover:shadow-md ${
-                        theme === 'dark' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-blue-700 hover:bg-blue-800'
-                      }`}
-                      aria-label="Save edited task"
-                    >
-                      <Save size={18} />
-                    </button>
-                    <button
-                      onClick={cancelEdit}
-                      className={`p-2 rounded-full text-white font-semibold transition-all duration-200 transform hover:scale-110 hover:shadow-md ${
-                        theme === 'dark' ? 'bg-red-600 hover:bg-red-700' : 'bg-red-700 hover:bg-red-800'
-                      }`}
-                      aria-label="Cancel editing"
-                    >
-                      <X size={18} />
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                // View mode
-                <>
-                  <span
-                    className={`flex-grow cursor-pointer text-lg ${
-                      task.completed
-                        ? (theme === 'dark' ? 'text-gray-400' : 'text-gray-500')
-                        : (theme === 'dark' ? 'text-gray-200' : 'text-gray-800')
-                    } break-words pr-2`}
-                    onClick={() => toggleComplete(task.id, task.completed)}
-                  >
-                    {task.text}
-                  </span>
-                  <div className="flex items-center space-x-2 mt-2 sm:mt-0 sm:ml-4">
-                    <button
-                      onClick={() => toggleComplete(task.id, task.completed)}
-                      className={`p-2 rounded-full focus:outline-none focus:ring-2 transition-all duration-200 transform hover:scale-110 hover:shadow-md ${
-                        task.completed
-                          ? (theme === 'dark' ? 'text-green-400 hover:text-green-300 focus:ring-green-500' : 'text-green-600 hover:text-green-700 focus:ring-green-500')
-                          : (theme === 'dark' ? 'text-yellow-400 hover:text-yellow-300 focus:ring-yellow-500' : 'text-yellow-600 hover:text-yellow-700 focus:ring-yellow-500')
-                      }`}
-                      aria-label={task.completed ? 'Mark as incomplete' : 'Mark as complete'}
-                    >
-                      {task.completed ? <CheckCircle size={20} /> : <XCircle size={20} />}
-                    </button>
-                    <button
-                      onClick={() => startEditing(task)}
-                      className={`p-2 rounded-full focus:outline-none focus:ring-2 transition-all duration-200 transform hover:scale-110 hover:shadow-md ${
-                        theme === 'dark' ? 'text-blue-400 hover:text-blue-300 focus:ring-blue-500' : 'text-blue-600 hover:text-blue-700 focus:ring-blue-500'
-                      }`}
-                      aria-label="Edit task"
-                    >
-                      <Edit size={20} />
-                    </button>
-                    <button
-                      onClick={() => handleDeleteClick(task)}
-                      className={`p-2 rounded-full focus:outline-none focus:ring-2 transition-all duration-200 transform hover:scale-110 hover:shadow-md ${
-                        theme === 'dark' ? 'text-red-400 hover:text-red-300 focus:ring-red-500' : 'text-red-600 hover:text-red-700 focus:ring-red-500'
-                      }`}
-                      aria-label="Delete task"
-                    >
-                      <Trash2 size={20} />
-                    </button>
-                  </div>
-                </>
-              )}
-            </li>
-          ))}
-        </ul>
-
-        {/* Clear Completed Tasks Button */}
-        {tasks.some(task => task.completed) && (
-          <div className="mt-6 text-center">
-            <button
-              onClick={clearCompletedTasks}
-              className={`px-6 py-2 rounded-full font-semibold transition-all duration-200 transform hover:scale-105 hover:shadow-lg ${
-                theme === 'dark' ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-red-700 hover:bg-red-800 text-white'
-              } ${isLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
-              disabled={isLoading}
-            >
-              Bersihkan Tugas Selesai
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Confirmation Modal for Delete */}
-      {showConfirmModal && taskToDelete && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className={`p-6 rounded-lg shadow-xl w-full max-w-sm ${
-            theme === 'dark' ? 'bg-gray-800 text-gray-100' : 'bg-white text-gray-900'
-          }`}>
-            <h3 className="text-xl font-bold mb-4">Konfirmasi Penghapusan</h3>
-            <p className="mb-6">Anda yakin ingin menghapus tugas ini: <span className="font-semibold">"{taskToDelete.text}"</span>?</p>
-            <div className="flex justify-end space-x-3">
-              <button
-                onClick={cancelDelete}
-                className={`px-4 py-2 rounded-md font-medium transition-colors duration-200 ${
-                  theme === 'dark' ? 'bg-gray-600 hover:bg-gray-700 text-gray-200' : 'bg-gray-300 hover:bg-gray-400 text-gray-800'
-                } hover:shadow-sm`}
-              >
-                Batal
-              </button>
-              <button
-                onClick={confirmDeleteTask}
-                className={`px-4 py-2 rounded-md font-medium transition-colors duration-200 ${
-                  theme === 'dark' ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-red-700 hover:bg-red-800 text-white'
-                } hover:shadow-sm`}
-              >
-                Hapus
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+    </style>
+</head>
+<body>
+    <div id="app" class="min-h-screen w-screen flex flex-col items-center justify-center p-4 transition-colors duration-500">
+        <!-- Content will be rendered here by JavaScript -->
     </div>
-  );
-};
 
-export default App;
+    <!-- Confirmation Modal Structure (hidden by default) -->
+    <div id="confirm-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 hidden">
+        <div class="p-6 rounded-lg shadow-xl w-full max-w-sm transition-colors duration-300" id="modal-content-wrapper">
+            <h3 class="text-xl font-bold mb-4" id="modal-title">Konfirmasi Penghapusan</h3>
+            <p class="mb-6">Anda yakin ingin menghapus tugas ini: <span class="font-semibold" id="task-to-delete-text"></span>?</p>
+            <div class="flex justify-end space-x-3">
+                <button id="cancel-delete-btn" class="px-4 py-2 rounded-md font-medium transition-colors duration-200 hover:shadow-sm">
+                    Batal
+                </button>
+                <button id="confirm-delete-btn" class="px-4 py-2 rounded-md font-medium transition-colors duration-200 hover:shadow-sm">
+                    Hapus
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        // Global state object
+        const appState = {
+            tasks: [],
+            newTask: '',
+            theme: 'light', // 'light' or 'dark'
+            message: '',
+            showMessageBox: false,
+            filterStatus: 'all', // 'all', 'active', 'completed'
+            editingTaskId: null,
+            editingTaskText: '',
+            showConfirmModal: false,
+            taskToDelete: null,
+            isLoading: true, // Initially true for loading tasks
+            messageTimeout: null
+        };
+
+        // DOM elements cache
+        const DOM = {
+            appContainer: document.getElementById('app'),
+            confirmModal: document.getElementById('confirm-modal'),
+            modalContentWrapper: document.getElementById('modal-content-wrapper'),
+            taskToDeleteText: document.getElementById('task-to-delete-text'),
+            cancelDeleteBtn: document.getElementById('cancel-delete-btn'),
+            confirmDeleteBtn: document.getElementById('confirm-delete-btn')
+        };
+
+        // Function to save tasks to localStorage
+        function saveTasksToLocalStorage() {
+            localStorage.setItem('todo-tasks', JSON.stringify(appState.tasks));
+        }
+
+        // Function to load tasks from localStorage
+        function loadTasksFromLocalStorage() {
+            const storedTasks = localStorage.getItem('todo-tasks');
+            if (storedTasks) {
+                try {
+                    const parsedTasks = JSON.parse(storedTasks);
+                    // Ensure createdAt is a number for sorting
+                    appState.tasks = parsedTasks.map(task => ({
+                        ...task,
+                        createdAt: typeof task.createdAt === 'number' ? task.createdAt : Date.now()
+                    }));
+                } catch (e) {
+                    console.error("Error parsing tasks from localStorage:", e);
+                    appState.tasks = []; // Reset if corrupted
+                }
+            } else {
+                appState.tasks = [];
+            }
+            // Sort tasks: incomplete tasks first, then completed tasks, by creation date
+            appState.tasks.sort((a, b) => {
+                if (a.completed && !b.completed) return 1;
+                if (!a.completed && b.completed) return -1;
+                return a.createdAt - b.createdAt;
+            });
+        }
+
+        // Function to render/update the UI based on appState
+        function renderApp() {
+            // Update body/html class for theme
+            if (appState.theme === 'dark') {
+                document.documentElement.classList.add('dark');
+                DOM.appContainer.className = `min-h-screen w-screen flex flex-col items-center justify-center p-4 transition-colors duration-500 bg-gradient-to-br from-gray-900 via-gray-800 to-indigo-900 text-gray-100`;
+            } else {
+                document.documentElement.classList.remove('dark');
+                DOM.appContainer.className = `min-h-screen w-screen flex flex-col items-center justify-center p-4 transition-colors duration-500 bg-gradient-to-br from-blue-50 to-purple-100 text-gray-900`;
+            }
+
+            // Clear existing content to re-render (simple approach for small app)
+            DOM.appContainer.innerHTML = '';
+
+            // Message Box
+            let messageBoxHTML = '';
+            if (appState.showMessageBox) {
+                const getMessageBgClass = () => {
+                    if (appState.message.includes('berhasil')) return 'bg-green-500';
+                    if (appState.message.includes('gagal')) return 'bg-red-500';
+                    if (appState.message.includes('tidak boleh kosong') || appState.message.includes('Tidak ada tugas yang sudah selesai')) return 'bg-yellow-500';
+                    return 'bg-blue-500';
+                };
+                messageBoxHTML = `
+                    <div id="message-box" class="fixed top-0 left-0 right-0 py-3 text-center z-50 transition-all duration-300 transform ${getMessageBgClass()} text-white message-box show">
+                        ${appState.message}
+                    </div>
+                `;
+            }
+            DOM.appContainer.insertAdjacentHTML('afterbegin', messageBoxHTML); // Insert at the top
+
+            // Main app content
+            DOM.appContainer.insertAdjacentHTML('beforeend', `
+                <div class="w-full max-w-sm md:max-w-md lg:max-w-lg p-6 rounded-2xl shadow-2xl relative
+                    ${appState.theme === 'dark' ? 'bg-gray-800 border border-gray-700' : 'bg-white border border-gray-200'}
+                    transition-colors duration-300">
+                    <!-- Theme Toggle Button -->
+                    <button id="theme-toggle-btn" class="absolute top-4 right-4 p-2 rounded-full transition-colors duration-300
+                        ${appState.theme === 'dark' ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-gray-200 hover:bg-gray-300 text-gray-700'} hover:shadow-md"
+                        aria-label="Toggle theme">
+                        ${appState.theme === 'dark' ?
+                            `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-sun"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="M4.93 4.93l1.41 1.41"/><path d="M17.66 17.66l1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="M6.34 17.66l-1.41 1.41"/><path d="M19.07 4.93l-1.41 1.41"/></svg>` :
+                            `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-moon"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>`
+                        }
+                    </button>
+
+                    <h1 class="text-3xl font-bold mb-6 text-center ${appState.theme === 'dark' ? 'text-purple-400' : 'text-purple-700'}">
+                        Daftar Tugas
+                    </h1>
+
+                    <!-- Add Task Input -->
+                    <div class="flex items-center mb-6">
+                        <input
+                            type="text"
+                            id="new-task-input"
+                            class="flex-grow p-3 rounded-l-lg border focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all duration-200
+                                ${appState.theme === 'dark' ? 'bg-gray-700 border-gray-600 text-gray-200 placeholder-gray-400' : 'bg-gray-50 border-gray-300 text-gray-900 placeholder-gray-500'}"
+                            placeholder="Tambahkan tugas baru..."
+                            value="${appState.newTask}"
+                            aria-label="New task input"
+                            ${appState.isLoading ? 'disabled' : ''}
+                        />
+                        <button
+                            id="add-task-btn"
+                            class="p-3 rounded-r-lg text-white font-semibold flex items-center justify-center transition-all duration-200 transform hover:scale-105 hover:shadow-md
+                                ${appState.theme === 'dark' ? 'bg-purple-600 hover:bg-purple-700' : 'bg-purple-700 hover:bg-purple-800'}
+                                ${appState.isLoading ? 'opacity-50 cursor-not-allowed' : ''}"
+                            aria-label="Add task"
+                            ${appState.isLoading ? 'disabled' : ''}
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-plus"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+                        </button>
+                    </div>
+
+                    <!-- Filter Buttons -->
+                    <div class="flex justify-center space-x-2 mb-6 flex-wrap">
+                        <button id="filter-all" class="px-4 py-2 rounded-full text-sm font-medium transition-colors duration-200 hover:shadow-sm
+                            ${appState.filterStatus === 'all' ? (appState.theme === 'dark' ? 'bg-purple-600 text-white hover:bg-purple-700' : 'bg-purple-700 text-white hover:bg-purple-800') : (appState.theme === 'dark' ? 'bg-gray-700 text-gray-300 hover:bg-gray-600' : 'bg-gray-200 text-gray-700 hover:bg-gray-300')}">
+                            Semua
+                        </button>
+                        <button id="filter-active" class="px-4 py-2 rounded-full text-sm font-medium transition-colors duration-200 hover:shadow-sm
+                            ${appState.filterStatus === 'active' ? (appState.theme === 'dark' ? 'bg-purple-600 text-white hover:bg-purple-700' : 'bg-purple-700 text-white hover:bg-purple-800') : (appState.theme === 'dark' ? 'bg-gray-700 text-gray-300 hover:bg-gray-600' : 'bg-gray-200 text-gray-700 hover:bg-gray-300')}">
+                            Aktif
+                        </button>
+                        <button id="filter-completed" class="px-4 py-2 rounded-full text-sm font-medium transition-colors duration-200 hover:shadow-sm
+                            ${appState.filterStatus === 'completed' ? (appState.theme === 'dark' ? 'bg-purple-600 text-white hover:bg-purple-700' : 'bg-purple-700 text-white hover:bg-purple-800') : (appState.theme === 'dark' ? 'bg-gray-700 text-gray-300 hover:bg-gray-600' : 'bg-gray-200 text-gray-700 hover:bg-gray-300')}">
+                            Selesai
+                        </button>
+                    </div>
+
+                    <!-- Loading Indicator -->
+                    ${appState.isLoading ? `
+                        <div class="flex justify-center py-4">
+                            <div class="loader"></div>
+                        </div>
+                    ` : ''}
+
+                    <!-- Task List -->
+                    <ul id="task-list" class="space-y-3">
+                        ${!appState.isLoading && appState.filteredTasks.length === 0 ? `
+                            <p class="text-center py-4 ${appState.theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}">
+                                ${appState.filterStatus === 'all' ? 'Belum ada tugas. Tambahkan satu!' : ''}
+                                ${appState.filterStatus === 'active' ? 'Tidak ada tugas aktif.' : ''}
+                                ${appState.filterStatus === 'completed' ? 'Tidak ada tugas yang sudah selesai.' : ''}
+                            </p>
+                        ` : ''}
+                        ${!appState.isLoading ? appState.filteredTasks.map(task => `
+                            <li
+                                class="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 rounded-lg shadow-md transition-all duration-200 hover:shadow-lg hover:-translate-y-0.5
+                                    ${appState.theme === 'dark' ? 'bg-gray-700 border border-gray-600' : 'bg-gray-50 border border-gray-200'}
+                                    ${task.completed ? 'opacity-70 line-through' : ''}"
+                                data-task-id="${task.id}"
+                            >
+                                ${appState.editingTaskId === task.id ? `
+                                    <!-- Edit mode -->
+                                    <div class="flex-grow flex items-center w-full mb-2 sm:mb-0">
+                                        <input
+                                            type="text"
+                                            value="${task.text}"
+                                            class="flex-grow p-2 rounded-md border focus:outline-none focus:ring-2 focus:ring-blue-500 edit-task-input
+                                                ${appState.theme === 'dark' ? 'bg-gray-600 border-gray-500 text-gray-100' : 'bg-white border-gray-300 text-gray-900'}"
+                                            aria-label="Edit task text"
+                                        />
+                                        <div class="flex ml-2 space-x-1">
+                                            <button
+                                                class="p-2 rounded-full text-white font-semibold transition-all duration-200 transform hover:scale-110 hover:shadow-md save-edit-btn
+                                                    ${appState.theme === 'dark' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-blue-700 hover:bg-blue-800'}"
+                                                aria-label="Save edited task">
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-save"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                                            </button>
+                                            <button
+                                                class="p-2 rounded-full text-white font-semibold transition-all duration-200 transform hover:scale-110 hover:shadow-md cancel-edit-btn
+                                                    ${appState.theme === 'dark' ? 'bg-red-600 hover:bg-red-700' : 'bg-red-700 hover:bg-red-800'}"
+                                                aria-label="Cancel editing">
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-x"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                                            </button>
+                                        </div>
+                                    </div>
+                                ` : `
+                                    <!-- View mode -->
+                                    <span
+                                        class="flex-grow cursor-pointer text-lg break-words pr-2 toggle-complete-span
+                                            ${task.completed ? (appState.theme === 'dark' ? 'text-gray-400' : 'text-gray-500') : (appState.theme === 'dark' ? 'text-gray-200' : 'text-gray-800')}"
+                                    >
+                                        ${task.text}
+                                    </span>
+                                    <div class="flex items-center space-x-2 mt-2 sm:mt-0 sm:ml-4">
+                                        <button
+                                            class="p-2 rounded-full focus:outline-none focus:ring-2 transition-all duration-200 transform hover:scale-110 hover:shadow-md toggle-complete-btn
+                                                ${task.completed ? (appState.theme === 'dark' ? 'text-green-400 hover:text-green-300 focus:ring-green-500' : 'text-green-600 hover:text-green-700 focus:ring-green-500') : (appState.theme === 'dark' ? 'text-yellow-400 hover:text-yellow-300 focus:ring-yellow-500' : 'text-yellow-600 hover:text-yellow-700 focus:ring-yellow-500')}"
+                                            aria-label="${task.completed ? 'Mark as incomplete' : 'Mark as complete'}">
+                                            ${task.completed ?
+                                                `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-check-circle"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>` :
+                                                `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-x-circle"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>`
+                                            }
+                                        </button>
+                                        <button
+                                            class="p-2 rounded-full focus:outline-none focus:ring-2 transition-all duration-200 transform hover:scale-110 hover:shadow-md edit-task-btn
+                                                ${appState.theme === 'dark' ? 'text-blue-400 hover:text-blue-300 focus:ring-blue-500' : 'text-blue-600 hover:text-blue-700 focus:ring-blue-500'}"
+                                            aria-label="Edit task">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-edit"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                                        </button>
+                                        <button
+                                            class="p-2 rounded-full focus:outline-none focus:ring-2 transition-all duration-200 transform hover:scale-110 hover:shadow-md delete-task-btn
+                                                ${appState.theme === 'dark' ? 'text-red-400 hover:text-red-300 focus:ring-red-500' : 'text-red-600 hover:text-red-700 focus:ring-red-500'}"
+                                            aria-label="Delete task">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash-2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+                                        </button>
+                                    </div>
+                                `}
+                            </li>
+                        `).join('') : ''}
+                    </ul>
+
+                    <!-- Clear Completed Tasks Button -->
+                    ${appState.tasks.some(task => task.completed) ? `
+                        <div class="mt-6 text-center">
+                            <button
+                                id="clear-completed-btn"
+                                class="px-6 py-2 rounded-full font-semibold transition-all duration-200 transform hover:scale-105 hover:shadow-lg
+                                    ${appState.theme === 'dark' ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-red-700 hover:bg-red-800 text-white'}
+                                    ${appState.isLoading ? 'opacity-50 cursor-not-allowed' : ''}"
+                                ${appState.isLoading ? 'disabled' : ''}
+                            >
+                                Bersihkan Tugas Selesai
+                            </button>
+                        </div>
+                    ` : ''}
+                </div>
+            `);
+
+            // Attach event listeners after rendering
+            attachEventListeners();
+
+            // Handle modal visibility
+            if (appState.showConfirmModal) {
+                DOM.confirmModal.classList.remove('hidden');
+                DOM.modalContentWrapper.classList.add(appState.theme === 'dark' ? 'bg-gray-800' : 'bg-white');
+                DOM.modalContentWrapper.classList.remove(appState.theme === 'dark' ? 'bg-white' : 'bg-gray-800'); // Ensure correct initial class for theme
+                DOM.modalContentWrapper.classList.add(appState.theme === 'dark' ? 'text-gray-100' : 'text-gray-900');
+                DOM.modalContentWrapper.classList.remove(appState.theme === 'dark' ? 'text-gray-900' : 'text-gray-100'); // Ensure correct initial class for theme
+
+                DOM.taskToDeleteText.textContent = appState.taskToDelete ? appState.taskToDelete.text : '';
+
+                DOM.cancelDeleteBtn.className = `px-4 py-2 rounded-md font-medium transition-colors duration-200 hover:shadow-sm ${appState.theme === 'dark' ? 'bg-gray-600 hover:bg-gray-700 text-gray-200' : 'bg-gray-300 hover:bg-gray-400 text-gray-800'}`;
+                DOM.confirmDeleteBtn.className = `px-4 py-2 rounded-md font-medium transition-colors duration-200 hover:shadow-sm ${appState.theme === 'dark' ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-red-700 hover:bg-red-800 text-white'}`;
+            } else {
+                DOM.confirmModal.classList.add('hidden');
+            }
+        }
+
+        // Function to attach all necessary event listeners
+        function attachEventListeners() {
+            // Theme Toggle
+            const themeToggleBtn = document.getElementById('theme-toggle-btn');
+            if (themeToggleBtn) {
+                themeToggleBtn.onclick = appState.toggleTheme;
+            }
+
+            // Add Task
+            const newTaskInput = document.getElementById('new-task-input');
+            const addTaskBtn = document.getElementById('add-task-btn');
+            if (newTaskInput) {
+                newTaskInput.oninput = (e) => { appState.newTask = e.target.value; };
+                newTaskInput.onkeypress = (e) => { if (e.key === 'Enter') appState.addTask(); };
+            }
+            if (addTaskBtn) {
+                addTaskBtn.onclick = appState.addTask;
+            }
+
+            // Filter Buttons
+            const filterAllBtn = document.getElementById('filter-all');
+            const filterActiveBtn = document.getElementById('filter-active');
+            const filterCompletedBtn = document.getElementById('filter-completed');
+            if (filterAllBtn) filterAllBtn.onclick = () => { appState.filterStatus = 'all'; renderApp(); };
+            if (filterActiveBtn) filterActiveBtn.onclick = () => { appState.filterStatus = 'active'; renderApp(); };
+            if (filterCompletedBtn) filterCompletedBtn.onclick = () => { appState.filterStatus = 'completed'; renderApp(); };
+
+            // Task List (using event delegation)
+            const taskList = document.getElementById('task-list');
+            if (taskList) {
+                taskList.onclick = (e) => {
+                    const listItem = e.target.closest('li[data-task-id]');
+                    if (!listItem) return;
+
+                    const taskId = listItem.dataset.taskId;
+                    const task = appState.tasks.find(t => t.id === taskId);
+                    if (!task) return;
+
+                    if (e.target.closest('.toggle-complete-span')) {
+                        appState.toggleComplete(taskId, task.completed);
+                    } else if (e.target.closest('.toggle-complete-btn')) {
+                        appState.toggleComplete(taskId, task.completed);
+                    } else if (e.target.closest('.edit-task-btn')) {
+                        appState.startEditing(task);
+                    } else if (e.target.closest('.delete-task-btn')) {
+                        appState.handleDeleteClick(task);
+                    }
+                };
+
+                taskList.oninput = (e) => {
+                    if (e.target.classList.contains('edit-task-input')) {
+                        appState.editingTaskText = e.target.value;
+                    }
+                };
+
+                taskList.onkeypress = (e) => {
+                    if (e.key === 'Enter' && e.target.classList.contains('edit-task-input')) {
+                        const taskId = e.target.closest('li[data-task-id]').dataset.taskId;
+                        appState.saveEdit(taskId);
+                    }
+                };
+
+                taskList.onclick = (e) => {
+                    const listItem = e.target.closest('li[data-task-id]');
+                    if (!listItem) return;
+                    const taskId = listItem.dataset.taskId;
+                    const task = appState.tasks.find(t => t.id === taskId);
+                    if (!task) return;
+
+                    if (e.target.closest('.save-edit-btn')) {
+                        appState.saveEdit(taskId);
+                    } else if (e.target.closest('.cancel-edit-btn')) {
+                        appState.cancelEdit();
+                    }
+                    // Handle other task clicks already set up above
+                };
+            }
+
+            // Clear Completed Button
+            const clearCompletedBtn = document.getElementById('clear-completed-btn');
+            if (clearCompletedBtn) {
+                clearCompletedBtn.onclick = appState.clearCompletedTasks;
+            }
+
+            // Modal Buttons
+            if (DOM.cancelDeleteBtn) {
+                DOM.cancelDeleteBtn.onclick = appState.cancelDelete;
+            }
+            if (DOM.confirmDeleteBtn) {
+                DOM.confirmDeleteBtn.onclick = appState.confirmDeleteTask;
+            }
+        }
+
+        // App Functions (mirroring React component methods)
+        appState.showMessage = (msg, type = 'success') => {
+            if (appState.messageTimeout) {
+                clearTimeout(appState.messageTimeout);
+            }
+            appState.message = msg;
+            appState.showMessageBox = true;
+            renderApp(); // Render to show the message box
+
+            const messageBoxElement = document.getElementById('message-box');
+            if (messageBoxElement) {
+                messageBoxElement.classList.add('show'); // Trigger transition
+            }
+
+            appState.messageTimeout = setTimeout(() => {
+                const currentMessageBoxElement = document.getElementById('message-box');
+                if (currentMessageBoxElement) {
+                    currentMessageBoxElement.classList.remove('show'); // Trigger hide transition
+                    currentMessageBoxElement.addEventListener('transitionend', () => {
+                        // Ensure it fully hides before removing from DOM
+                        appState.showMessageBox = false;
+                        appState.message = '';
+                        renderApp(); // Re-render to remove the message box
+                    }, { once: true });
+                } else {
+                    appState.showMessageBox = false;
+                    appState.message = '';
+                    renderApp(); // Fallback if element not found immediately
+                }
+            }, 3000); // 3 seconds before starting hide animation
+        };
+
+        appState.addTask = () => {
+            if (appState.newTask.trim() === '') {
+                appState.showMessage('Tugas tidak boleh kosong!', 'warning');
+                return;
+            }
+
+            // Generate a unique ID for the new task
+            const newId = Date.now().toString(); // Simple ID generation
+            const newTask = {
+                id: newId,
+                text: appState.newTask,
+                completed: false,
+                createdAt: Date.now()
+            };
+
+            appState.tasks.push(newTask);
+            appState.newTask = '';
+            saveTasksToLocalStorage();
+            appState.showMessage('Tugas berhasil ditambahkan!', 'success');
+            renderApp(); // Update input field and task list
+        };
+
+        appState.toggleComplete = (id, completed) => {
+            const taskIndex = appState.tasks.findIndex(task => task.id === id);
+            if (taskIndex > -1) {
+                appState.tasks[taskIndex].completed = !completed;
+                // Re-sort tasks after toggling completion
+                appState.tasks.sort((a, b) => {
+                    if (a.completed && !b.completed) return 1;
+                    if (!a.completed && b.completed) return -1;
+                    return a.createdAt - b.createdAt;
+                });
+                saveTasksToLocalStorage();
+                appState.showMessage('Status tugas diperbarui!', 'success');
+                renderApp();
+            }
+        };
+
+        appState.startEditing = (task) => {
+            appState.editingTaskId = task.id;
+            appState.editingTaskText = task.text;
+            renderApp();
+            // Focus on the input field after it's rendered
+            requestAnimationFrame(() => {
+                const editInput = document.querySelector(`.edit-task-input[value="${task.text}"]`);
+                if (editInput) {
+                    editInput.focus();
+                    editInput.select();
+                }
+            });
+        };
+
+        appState.saveEdit = (id) => {
+            if (appState.editingTaskText.trim() === '') {
+                appState.showMessage('Tugas tidak boleh kosong!', 'warning');
+                return;
+            }
+
+            const taskIndex = appState.tasks.findIndex(task => task.id === id);
+            if (taskIndex > -1) {
+                appState.tasks[taskIndex].text = appState.editingTaskText;
+                appState.editingTaskId = null;
+                appState.editingTaskText = '';
+                saveTasksToLocalStorage();
+                appState.showMessage('Tugas berhasil diperbarui!', 'success');
+                renderApp(); // Exit edit mode
+            }
+        };
+
+        appState.cancelEdit = () => {
+            appState.editingTaskId = null;
+            appState.editingTaskText = '';
+            renderApp();
+        };
+
+        appState.handleDeleteClick = (task) => {
+            appState.taskToDelete = task;
+            appState.showConfirmModal = true;
+            renderApp();
+        };
+
+        appState.confirmDeleteTask = () => {
+            if (!appState.taskToDelete) {
+                return;
+            }
+
+            appState.tasks = appState.tasks.filter(task => task.id !== appState.taskToDelete.id);
+            saveTasksToLocalStorage();
+            appState.showMessage('Tugas berhasil dihapus!', 'success');
+            appState.showConfirmModal = false;
+            appState.taskToDelete = null;
+            renderApp(); // Hide modal
+        };
+
+        appState.cancelDelete = () => {
+            appState.showConfirmModal = false;
+            appState.taskToDelete = null;
+            renderApp();
+        };
+
+        appState.clearCompletedTasks = () => {
+            const completedTasksExist = appState.tasks.some(task => task.completed);
+            if (!completedTasksExist) {
+                appState.showMessage('Tidak ada tugas yang sudah selesai untuk dihapus.', 'info');
+                return;
+            }
+
+            appState.isLoading = true;
+            renderApp(); // Show loading state
+
+            // Simulate a brief loading time for visual feedback
+            setTimeout(() => {
+                appState.tasks = appState.tasks.filter(task => !task.completed);
+                saveTasksToLocalStorage();
+                appState.showMessage('Semua tugas yang sudah selesai berhasil dihapus!', 'success');
+                appState.isLoading = false;
+                renderApp(); // Hide loading and update list
+            }, 500); // 0.5 seconds delay
+        };
+
+        appState.toggleTheme = () => {
+            appState.theme = appState.theme === 'light' ? 'dark' : 'light';
+            renderApp();
+        };
+
+        // Filter tasks based on filterStatus (computed property)
+        Object.defineProperty(appState, 'filteredTasks', {
+            get: function() {
+                return this.tasks.filter((task) => {
+                    if (this.filterStatus === 'active') {
+                        return !task.completed;
+                    } else if (this.filterStatus === 'completed') {
+                        return task.completed;
+                    }
+                    return true; // 'all' status
+                });
+            }
+        });
+
+        // Initialize app on window load
+        window.onload = function() {
+            loadTasksFromLocalStorage();
+            appState.isLoading = false; // Data loaded from local storage is fast
+            renderApp(); // Initial render
+        };
+    </script>
+</body>
+</html>
